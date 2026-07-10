@@ -1,0 +1,24 @@
+local:
+  source_path: "data/raw"
+  target_path: "data/target"
+
+dev:
+  source_path: "s3://legacy-migration-raw-dev/extracts"
+  target_path: "data/target-dev"        # local staging before S3 upload
+  s3_bucket: "legacy-migration-curated-dev"
+  s3_prefix: "customers-orders"
+  glue_job_name: "legacy-migration-dev"
+
+test:
+  source_path: "s3://legacy-migration-raw-test/extracts"
+  target_path: "data/target-test"
+  s3_bucket: "legacy-migration-curated-test"
+  s3_prefix: "customers-orders"
+  glue_job_name: "legacy-migration-test"
+
+prod:
+  source_path: "s3://legacy-migration-raw-prod/extracts"
+  target_path: "data/target-prod"
+  s3_bucket: "legacy-migration-curated-prod"
+  s3_prefix: "customers-orders"
+  glue_job_name: "legacy-migration-prod"
