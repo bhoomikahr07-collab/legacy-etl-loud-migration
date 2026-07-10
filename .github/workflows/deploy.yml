@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ develop, test, main ]
+
+jobs:
+  set-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      env_name: ${{ steps.map.outputs.env_name }}
+    steps:
+      - id: map
+        run: |
+          if [ "${{ github.ref_name }}" = "develop" ]; then echo "env_name=dev" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ github.ref_name }}" = "test" ]; then echo "env_name=test" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ github.ref_name }}" = "main" ]; then echo "env_name=prod" >> "$GITHUB_OUTPUT"; fi
+
+  deploy:
+    needs: set-environment
+    runs-on: ubuntu-latest
+    # Maps to a GitHub Environment of the same name — configure required
+    # reviewers on the "prod" environment in repo Settings > Environments
+    # for a manual-approval gate before production deploys.
+    environment: ${{ needs.set-environment.outputs.env_name }}
+    env:
+      ENV_NAME: ${{ needs.set-environment.outputs.env_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests (deploy gate)
+        run: python -m unittest discover tests -v
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Package job scripts
+        run: |
+          mkdir -p dist
+          cp src/*.py dist/
+
+      - name: Upload scripts to S3
+        run: |
+          aws s3 cp dist/ "s3://legacy-migration-scripts-${ENV_NAME}/glue-scripts/legacy-migration/" --recursive
+
+      - name: Update Glue job definition
+        run: |
+          aws glue update-job \
+            --job-name "legacy-migration-${ENV_NAME}" \
+            --job-update '{
+              "Role": "arn:aws:iam::<account-id>:role/GlueLegacyMigrationRole",
+              "Command": {
+                "Name": "pythonshell",
+                "ScriptLocation": "s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/glue_job.py",
+                "PythonVersion": "3.9"
+              },
+              "DefaultArguments": {
+                "--ENV": "'"${ENV_NAME}"'",
+                "--extra-py-files": "s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/extract.py,s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/transform.py,s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/load.py,s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/schema.py,s3://legacy-migration-scripts-'"${ENV_NAME}"'/glue-scripts/legacy-migration/utils.py"
+              }
+            }'
+
+      - name: Smoke-test run (dev/test only)
+        if: env.ENV_NAME != 'prod'
+        run: |
+          aws glue start-job-run --job-name "legacy-migration-${ENV_NAME}"
